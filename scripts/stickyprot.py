@@ -314,7 +314,7 @@ def main(args):
         os.makedirs((fake_a3m_out_dir := f"{args.output_dir}/fake_a3m_files/"), exist_ok=True)
         for pose in poses:
             msa_out_str = compile_msa_str(
-                b_seq=pose[f"ligandmpnn_{cycle}_sequence"],
+                b_seq=pose[f"ligandmpnn_{cycle}_sequence"].split(":")[0],
                 t_seq=target_seq,
                 target_msa_sequences=target_seqs,
                 paired_msa_sequences=fake_paired_msa_dict[pose[f"cycle_{cycle}_fake_msa_poses"]]
