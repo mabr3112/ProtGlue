@@ -261,7 +261,7 @@ def main(args):
             prefix=f"ligandmpnn_{cycle}",
             nseq=int(args.num_mpnn_sequences),  # Use the sequences argument
             model_type="soluble_mpnn",
-            options=f"--chains_to_design A,C --symmetry_residues {symmetry_res} --symmetry_weights {symmetry_weights}",
+            options=f'--chains_to_design A,C --symmetry_residues="{symmetry_res}" --symmetry_weights="{symmetry_weights}"',
             overwrite=False
         )
 
