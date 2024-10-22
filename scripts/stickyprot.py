@@ -7,6 +7,7 @@ import os
 import logging
 
 # dependencies
+import protflow
 from protflow.poses import Poses
 from protflow.jobstarters import SbatchArrayJobstarter
 from protflow.tools.rfdiffusion import RFdiffusion
@@ -72,6 +73,7 @@ def main(args):
     '''Main function that processes poses using LigandMPNN.'''
     # set logging
     import logging
+    os.makedirs(args.output_dir, exist_ok=True)
     logging.basicConfig(
         filename=f'{args.output_dir}/rfdiffusion_protflow_log.txt',
         level=logging.INFO,
@@ -107,10 +109,15 @@ def main(args):
     os.makedirs(results_dir, exist_ok=True)
 
     # define target contig.
-    true_selector.select("target_residues", poses)
-    target_residues = poses.df["target_residues"].values[0].to_rfdiffusion_contig()
-    target_length = len(target_residues)
-    target_contig = args.target_contig or target_residues
+    if args.target_contig:
+        target_residues = protflow.residues.from_contig(args.target_contig)
+        target_length = len(target_residues)
+        target_contig = args.target_contig
+    else:
+        true_selector.select("target_residues", poses)
+        target_residues = poses.df["target_residues"].values[0].to_rfdiffusion_contig()
+        target_length = len(target_residues)
+        target_contig = target_residues
 
     diff_opts = f"diffuser.T=50 'contigmap.contigs=[{target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues}]' potentials.guiding_potentials=[\\'type:custom_binder_potential,binderlen:80,contacts_weight:{args.contacts_weight},rog_weight:{args.rog_weight}\\']"
 
