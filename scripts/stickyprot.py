@@ -299,15 +299,15 @@ def main(args):
         )
 
         poses.calculate_composite_score(f"cycle_{cycle}_esm_comp_score", scoreterms=[f"esm_{cycle}_plddt", f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd"], weights=[-1,1])
-        poses.filter_poses_by_value(f'esm_{cycle}_plddt', 0.85, operator=">=", prefix=f"cycle_{cycle}_esm_plddt")
-        poses.filter_poses_by_value(f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd", 4, operator=">=", prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd")
+        poses.filter_poses_by_value(f'esm_{cycle}_plddt', 0.7, operator=">=", prefix=f"cycle_{cycle}_esm_plddt")
+        poses.filter_poses_by_value(f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd", 4, operator="<=", prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd")
 
         logging.info(f"converting all pdbs to fasta files for af2 prediction")
         poses.convert_pdb_to_fasta(prefix=f"cycle_{cycle}_fasta", update_poses=True)
 
         # filter poses down
-        poses.filter_poses_by_rank(5, f"esm_{cycle}_plddt", remove_layers=2)
-        logging.info(f"Filtered down poses to final selection of {len(poses)} sequences for AF2 dimer preds.")
+        #poses.filter_poses_by_rank(5, f"esm_{cycle}_plddt", remove_layers=2)
+        #logging.info(f"Filtered down poses to final selection of {len(poses)} sequences for AF2 dimer preds.")
 
         # prep input for fake-msa generation
         fake_a3m_file_list = []
