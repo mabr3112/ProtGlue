@@ -10,7 +10,7 @@ import logging
 # dependencies
 import protflow
 from protflow.poses import Poses
-from protflow.jobstarters import SbatchArrayJobstarter
+from protflow.jobstarters import SbatchArrayJobstarter, LocalJobStarter
 from protflow.tools.rfdiffusion import RFdiffusion
 from protflow.tools.ligandmpnn import LigandMPNN
 from protflow.tools.esmfold import ESMFold
@@ -23,22 +23,12 @@ from protflow.tools.protein_edits import SequenceRemover, ChainAdder
 from protflow.utils.metrics import calc_interchain_contacts_pdb
 from protflow.config import AUXILIARY_RUNNER_SCRIPTS_DIR as scripts_dir
 from protflow.tools.rosetta import Rosetta
-from protflow.utils.utils import parse_fasta_to_dict
+from protflow.utils.biopython_tools import load_structure_from_pdbfile, get_sequence_from_pose
 
 # here we define miscellaneous functions
 def random_numbers() -> str:
     '''Guess what it does.'''
     return "".join([str(x) for x in random.sample(range(1,10), 9)])
-
-def get_target_msa(msa_path: str) -> list:
-    '''Collects MSA info from a3m file. Has to be formatted customly as created in this notebook/script.'''    
-    with open(msa_path, 'r', encoding="UTF-8") as f:
-        raw_target_msa = f.read()
-
-    # only extract sequences and remove colons
-    target_msa = [x.strip().replace(":", "") for x in raw_target_msa.split("\n")[1:] if x]
-    print(f"length of target msa: ", len(target_msa))
-    return target_msa
 
 def compile_dimer_msa_str(b_seq, t_seq, target_msa_sequences) -> str:
     '''Creates fake msa_str for alphafold prediction. very custom, not to be used by anyone.'''
@@ -66,14 +56,37 @@ def compile_dimer_msa_str(b_seq, t_seq, target_msa_sequences) -> str:
 """
     return msa_str
 
-def compile_msa_str(b_seq, t_seq, target_msa_sequences) -> str:
-    return NotImplemented
+def compile_msa_str(b_seq: str, t_seq: str, target_msa_sequences: list[str], paired_msa_sequences: list[str]) -> str:
+    '''Compiles a3m file formatted msa string for binder-target prediction using target_msa_sequences and joint_msa_sequences.'''
+    # compile gap strings for target and binder
+    b_len = len(b_seq)
+    t_len = len(t_seq)
+    b_gap = "-"*b_len
+    t_gap = "-"*t_len
+
+    # write joint msa-str
+    msa_joint = "\n".join(f">joint_{str(i).zfill(4)}\t{random_numbers()}\n{seq.replace(':','')}" for i, seq in enumerate(paired_msa_sequences, start=1))
+
+    # write target msa-str
+    msa_target = "\n".join(f">target_{str(i).zfill(4)}\t{random_numbers()}\n{b_gap}{seq}" for i, seq in enumerate(target_msa_sequences, start=1))
+
+    # compile string for joint MSA:
+    msa_str = f"""#{b_len},{t_len}\t1,1
+>101\t102
+{b_seq}{t_seq}
+{msa_joint}
+>101
+{b_seq}{t_gap}
+>102
+{b_gap}{t_seq}
+{msa_target}
+"""
+    return msa_str
 
 ## This defines what is done when the script is started as a script
 def main(args):
     '''Main function that processes poses using LigandMPNN.'''
     # set logging
-    import logging
     os.makedirs(args.output_dir, exist_ok=True)
     logging.basicConfig(
         filename=f'{args.output_dir}/rfdiffusion_protflow_log.txt',
@@ -82,28 +95,43 @@ def main(args):
     )
 
     # setup jobstarters
-    sbatch_gpu_jobstarter = SbatchArrayJobstarter(max_cores=10, gpus=1)
-    sbatch_cpu_jobstarter = SbatchArrayJobstarter(max_cores=640)
+    if args.jobstarter == "slurm_gpu":
+        optional_gpu_jobstarter = SbatchArrayJobstarter(max_cores=args.max_gpus, gpus=1)
+        gpu_jobstarter = SbatchArrayJobstarter(max_cores=args.max_gpus, gpus=1)
+        cpu_jobstarter = SbatchArrayJobstarter(max_cores=args.max_cpus)
+    elif args.jobstarter == "slurm_cpu":
+        optional_gpu_jobstarter = SbatchArrayJobstarter(max_cores=args.max_cpus)
+        gpu_jobstarter = SbatchArrayJobstarter(max_cores=args.max_gpus, gpus=1)
+        cpu_jobstarter = SbatchArrayJobstarter(max_cores=args.max_cpus)
+    elif args.jobstarter == "local":
+        optional_gpu_jobstarter = LocalJobStarter(max_cores=args.max_gpus)
+        gpu_jobstarter = LocalJobStarter(max_cores=args.max_gpus)
+        cpu_jobstarter = LocalJobStarter(max_cores=args.max_cpus)
+    else:
+        raise ValueError(f"Either {{slurm_gpu, slurm_cpu, local}} are allowed as options for --jobstarter parameter.")
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
     # Create instances of necessary classes
-    ligandmpnn_runner = LigandMPNN(jobstarter=sbatch_cpu_jobstarter)
-    rfdiffusion_runner = RFdiffusion(jobstarter=sbatch_cpu_jobstarter)
-    esmfold_runner = ESMFold(jobstarter=sbatch_gpu_jobstarter)
-    colabfold_runner = Colabfold(jobstarter=sbatch_cpu_jobstarter)
-    motif_bb_rmsd = MotifRMSD(ref_col="rfdiff_1_location", jobstarter=sbatch_cpu_jobstarter)
-    rosetta=Rosetta(jobstarter=sbatch_cpu_jobstarter)
+    ligandmpnn_runner = LigandMPNN(jobstarter=optional_gpu_jobstarter)
+    rfdiffusion_runner = RFdiffusion(jobstarter=optional_gpu_jobstarter)
+    esmfold_runner = ESMFold(jobstarter=gpu_jobstarter)
+    colabfold_runner = Colabfold(jobstarter=optional_gpu_jobstarter)
+    motif_bb_rmsd = MotifRMSD(ref_col="rfdiff_1_location", jobstarter=cpu_jobstarter)
+    rosetta=Rosetta(jobstarter=cpu_jobstarter)
 
     # setup chain selectors
     chain_selector = ChainSelector()
     true_selector = TrueSelector()
-    chain_adder = ChainAdder(jobstarter=sbatch_cpu_jobstarter)
-    sequence_remover = SequenceRemover(jobstarter=sbatch_cpu_jobstarter)
+    chain_adder = ChainAdder(jobstarter=cpu_jobstarter)
+    sequence_remover = SequenceRemover(jobstarter=cpu_jobstarter)
 
     # Load poses from the input directory
     poses = Poses(poses=args.target, work_dir=args.output_dir)
+    target_seq = get_sequence_from_pose(load_structure_from_pdbfile(poses.poses_list()[0]))
+    if len(target_seq.split(":") > 1):
+        raise ValueError(f"Target must be single-chain. Otherwise this pipeline will fail!")
 
     # setup results directory
     results_dir = f"{poses.work_dir}/results/"
@@ -157,6 +185,7 @@ def main(args):
 
     # break if diffuse_only
     if args.diffuse_only:
+        logging.info(f"Diffuse only was specified, now breaking Script.")
         sys.exit(0)
 
     partial_diffusion_target_contig = f"B{int(args.binder_length)+1}-{int(args.binder_length) + target_length}"
@@ -170,20 +199,69 @@ def main(args):
         options=diff_opts,
     )
 
-    num_cycles = args.num_refinement_cycles  # For example, 3 cycles
+    # create sequences for target
+    target = Poses(poses=args.target, work_dir=f"{poses.work_dir}/target_msa")
+    ligandmpnn_runner.run(target, prefix="mpnn", jobstarter=gpu_jobstarter, nseq=500, model_type="soluble_mpnn")
+    target_seqs = target.df["mpnn_sequence"].to_list()
+
+    num_cycles = args.num_refinement_cycles
+    fake_msa_lengths = [50, 25, 10]
     for cycle in range(1, num_cycles+1):
-        print(f"Processing cycle {cycle}")
+        print(f"Starting refinement cycle {cycle}")
 
         # select RMSD ref_motif
         chain_selector.select("rfdiffusion_binder_res", poses=poses, chain="A")
 
-        logging.info(f"running ligandmpnn")
-         # Run the LigandMPNN process with the provided arguments
+        # prep binder input for fake-msa generation
+        len_fake_msa = fake_msa_lengths[cycle]
+        logging.info(f"Designing {len_fake_msa} sequences each for {len(poses)} backbones using LigandMPNN.")
+        fake_msa_inputs = poses.df["poses"].to_list()
+        fake_msa_poses = Poses(poses = fake_msa_inputs, work_dir = poses.work_dir + "/fake_msa_paired_seqs/")
+
+        # store fake-msa generation poses in df for later retrieval
+        poses.df[f"cycle_{cycle}_fake_msa_poses"] = fake_msa_inputs
+
+        # design paired binder-target sequence pairs for fake MSA
+        ligandmpnn_runner.run(
+            poses = fake_msa_poses,
+            prefix = "mpnn",
+            jobstarter = optional_gpu_jobstarter,
+            nseq = len_fake_msa,
+            model_type = "soluble_mpnn",
+            overwrite = False
+        )
+
+        # compile designed sequences into a dictionary that maps the input backbone to the corresponding fake paired msa.
+        fake_msa_poses.df["prepped_seqs"] = fake_msa_poses.df["mpnn_sequence"].str.replace(":","")
+        fake_paired_msa_dict = fake_msa_poses.df.groupby("input_poses")["prepped_seqs"].apply(list).to_dict()
+
+        get_desc = lambda path: os.path.splitext(os.path.basename(path))[0]
+
+        # copy second binder-chain into pose for tied sequence design
+        chain_adder.superimpose_add_chain(
+            poses = poses,
+            prefix = f"cycle_{cycle}_mpnn_chain_added",
+            ref_col = "poses",
+            copy_chain = "A",
+            jobstarter = cpu_jobstarter,
+            translate_x = 250
+        )
+
+        # parse tied_residues argument for LigandMPNN
+        binder_residues = poses.df["rfdiffusion_binder_res"].to_list()[0].to_list()
+        symmetry_res = "|".join([f'{res},{res.replace("A", "C")}' for res in binder_residues])
+
+        # parse symmetry_weights argument for LigandMPNN
+        symmetry_weights = "|".join(["0.5,0.5" for _ in binder_residues])
+
+        # Design binder sequences
+        logging.info(f"Designing {args.num_mpnn_sequences} sequences each for {len(poses)} backbones using LigandMPNN.")
         poses = ligandmpnn_runner.run(
             poses=poses,
             prefix=f"ligandmpnn_{cycle}",
-            nseq=int(args.sequences),  # Use the sequences argument
-            model_type="ligand_mpnn",
+            nseq=int(args.num_mpnn_sequences),  # Use the sequences argument
+            model_type="soluble_mpnn",
+            options=f"--chains_to_design A,C --symmetry_residues {symmetry_res} --symmetry_weights {symmetry_weights}",
             overwrite=False
         )
 
@@ -191,7 +269,7 @@ def main(args):
         poses = sequence_remover.run(
             poses=poses,
             prefix=f"remove_seqs_{cycle}",
-            chains=[1],
+            chains=[1, 2],
             overwrite=False
         )
 
@@ -201,8 +279,8 @@ def main(args):
             prefix=f'esm_{cycle}'
         )
 
+        # calculate RMSD, composite score and filter for ESM success
         chain_selector.select("esm_chain_A", poses=poses, chain="A")
-        poses.filter_poses_by_rank(n=9, score_col='esm_1_plddt', remove_layers=1, ascending=False, prefix='top9_per_input', plot=True)
         motif_bb_rmsd.run(poses, prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}", target_motif="esm_chain_A", ref_motif="rfdiffusion_binder_res", atoms=["C", "CA", "N", "O"])
 
         # 1. Define the columns, titles, and y-labels before the plotting function
@@ -221,7 +299,11 @@ def main(args):
             show_fig = False # on the cluster, never show the figures! in Jupyter Notebooks you can feel free to show them.
         )
 
-        logging.info(f"converting all pdbs to fasta files for af prediction")
+        poses.calculate_composite_score(f"cycle_{cycle}_esm_comp_score", scoreterms=[f"esm_{cycle}_plddt", f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd"], weights=[-1,1])
+        poses.filter_poses_by_value(f'esm_{cycle}_plddt', 0.85, operator=">=", prefix=f"cycle_{cycle}_esm_plddt")
+        poses.filter_poses_by_value(f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd", 4, operator=">=", prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd")
+
+        logging.info(f"converting all pdbs to fasta files for af2 prediction")
         poses.convert_pdb_to_fasta(prefix=f"cycle_{cycle}_fasta", update_poses=True)
         opts = "--num-models 1 --num-recycle 3"
 
@@ -230,23 +312,20 @@ def main(args):
         logging.info(f"Filtered down poses to final selection of {len(poses)} sequences for AF2 dimer preds.")
 
         # prep input for fake-msa generation
-        sequences = [list(parse_fasta_to_dict(pose).values())[0].strip() for pose in poses.poses_list()]
-        descriptions = poses.df["poses_description"].to_list()
-
-        logging.info(f"Prepping fake msa's")
-        # read in target-msa for fake_msa generation
-        target_msa = get_target_msa(args.fake_msa_path)
-        full_target_seq = args.full_target_seq or "MRESKTLGAVQIMNGLFHIALGGLLMIPAGIYAPICVTVWYPLWGGIMYIISGSLLAATEKNSRKCLVKGKMIMNSLSLFAAISGMILSIMDILNIKISHFLKMESLNFIRAHTPYINIYNCEPANPSEKNSPSTQYCYSIQSLFLGILSVMLIFAFFQELVIAG"
-
-        # create fake a3m files
         fake_a3m_file_list = []
         os.makedirs((fake_a3m_out_dir := f"{args.output_dir}/fake_a3m_files/"), exist_ok=True)
-        for seq, description in zip(sequences, descriptions):
-            msa_out_str = compile_dimer_msa_str(b_seq=seq, t_seq=full_target_seq, target_msa_sequences=target_msa)
-            with open((outf := f"{fake_a3m_out_dir}/{description}.a3m"), 'w', encoding="UTF-8") as f:
+        for pose in poses:
+            msa_out_str = compile_msa_str(
+                b_seq=pose[f"ligandmpnn_{cycle}_sequence"],
+                t_seq=target_seq,
+                target_msa_sequences=target_seqs,
+                paired_msa_sequences=fake_paired_msa_dict[pose[f"cycle_{cycle}_fake_msa_poses"]]
+            )
+
+            # write generated a3m string to file
+            with open((outf := f"{fake_a3m_out_dir}/{pose['poses_description']}.a3m"), 'w', encoding="UTF-8") as f:
                 f.write(msa_out_str)
             fake_a3m_file_list.append(outf)
-
 
         # set fake a3m files as new poses
         poses.df["poses"] = fake_a3m_file_list
@@ -259,21 +338,14 @@ def main(args):
             options=opts
         )
 
-        print('original dataframe:')
-        calculate_poses_interaction_pae(f"af_{cycle}_binder", poses=poses, pae_list_col=f"af_{cycle}_pae_list", binder_start=1, binder_end=80, target_start=81, target_end=186)
-        print(poses.df[['poses_description', f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']])
         filtered_df = poses.df[(poses.df[f'af_{cycle}_binder_pae_interaction'] < 14) & (poses.df[f'af_{cycle}_iptm'] > 0.65)]
-        print('filtered DataFrame:')
-        print(filtered_df[['poses_description', f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']])
         poses.df = filtered_df
         poses.filter_poses_by_rank(n=10, score_col=f'af_{cycle}_binder_pae_interaction', ascending=False, prefix=f'best_of_ipAE_{cycle}', plot=True)
         poses.filter_poses_by_rank(n=10 , score_col=f'af_{cycle}_iptm', ascending=False, prefix=f'best_of_ipTM_{cycle}', plot=True)
-        print('filtered dataframe:')
-        print(poses.df[['poses_description', f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']])
 
-        cols = ["f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm'"]  # Replace with actual column names from poses.df
-        titles = ["f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm'"]  # Titles for the violin plots
-        y_labels = ["f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm'"]  # Y-axis l
+        cols = [f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']  # Replace with actual column names from poses.df
+        titles = [f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']  # Titles for the violin plots
+        y_labels = [f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']  # Y-axis l
 
         plots.violinplot_multiple_cols(
             dataframe = poses.df,
@@ -281,7 +353,7 @@ def main(args):
             titles = titles, # specify the titles that the individual violins should get, as a list ["title_col_a", "title_col_b", ...] # type: ignore
             y_labels = y_labels, # y_labels for all the violins, same as above, list of labels ["...", ...]
             dims = None,
-            out_path = f"{results_dir}/filtered_ipTM_ipAE{cycle}.png", # create an output directory for your plots!
+            out_path = f"{results_dir}/filtered_ipTM_ipAE_{cycle}.png", # create an output directory for your plots!
             show_fig = False # on the cluster, never show the figures! in Jupyter Notebooks you can feel free to show them.
         )
 
@@ -293,10 +365,11 @@ def main(args):
 
         logging.info(f"Postrelax filter.")
         poses.filter_poses_by_rank(
-            n=1,
+            n=25,
             score_col="fastrelax_total_score",
             prefix="fastrelax_down"
         )
+        sys.exit(0)
 
 ## This is only executed when the script is started as a script
 if __name__ == "__main__":
@@ -306,7 +379,8 @@ if __name__ == "__main__":
    # Required options
     argparser.add_argument('--target', type=str, required=True, help='Path to the pdb-file that should be used as target.')
     argparser.add_argument("--output_dir", type=str, required=True, help='Path to the folder containing the output')
-    argparser.add_argument("--sequences", type=str, required=True, help='Number of sequences generated by LigandMPNN')
+    argparser.add_argument("--num_mpnn_sequences", type=str, required=True, help='Number of sequences generated by LigandMPNN')
+    argparser.add_argument("--jobstarter", type=str, default="slurm_gpu", help="One of {slurm_gpu, slurm_cpu, local}. Type of JobStarter that you would like to run this script.")
 
     # RFdiffusion Options
     argparser.add_argument("--binder_length", type=str, default="80", help='Specify the length of your binder')
