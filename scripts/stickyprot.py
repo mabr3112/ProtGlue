@@ -305,7 +305,6 @@ def main(args):
 
         logging.info(f"converting all pdbs to fasta files for af2 prediction")
         poses.convert_pdb_to_fasta(prefix=f"cycle_{cycle}_fasta", update_poses=True)
-        opts = "--num-models 1 --num-recycle 3"
 
         # filter poses down
         poses.filter_poses_by_rank(5, f"esm_{cycle}_plddt", remove_layers=2)
@@ -332,6 +331,7 @@ def main(args):
 
         # predict with colabfold
         logging.info(f"predicting interactions with Colabfod.")
+        opts = "--num-models 1 --num-recycle 3"
         poses = colabfold_runner.run(
             poses=poses,
             prefix=f"af_{cycle}",
