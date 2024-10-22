@@ -312,6 +312,7 @@ if __name__ == "__main__":
     argparser.add_argument("--binder_length", type=str, default="80", help='Specify the length of your binder')
     argparser.add_argument("--hotspot_residues", type=str, required=True, help='Specify the hotspot residues on your target that you want to target with your binder.')
     argparser.add_argument("--num_diff", type=int, default=100, help='Number of diffusion outputs')
+    argparser.add_argument("--target_contig", type=str, help="Specify the contig of the target that should be used as a binder target")
     argparser.add_argument("--rog_cutoff", type=float, default=18, help="ROG cutoff to filter RFdiffusion outputs by. For binder lengths of 80 residues, we recommend to set this value to 14!")
     argparser.add_argument("--contacts_cutoff", type=float, default=300, help="Cutoff for interchain contact count after Rfdiffusion. For 80 residue binders, we typically use 300. The larger your binder, the larger this value can be. Check your output_dir/results/ folder for ROG and contacts distribution of your RFdiffusion output.")
     argparser.add_argument("--rfdiff_plddt_cutoff", type=float, default=0.92, help="pLDDT cutoff to discard RFdiffusion outputs.")
