@@ -15,9 +15,8 @@ from protflow.tools.esmfold import ESMFold
 from protflow.metrics.rmsd import MotifRMSD
 from protflow.utils.metrics import calc_rog_of_pdb
 import protflow.utils.plotting as plots
-from protflow.tools.residue_selectors import ChainSelector
-from protflow.tools.colabfold import Colabfold
-from protflow.tools.colabfold import calculate_poses_interaction_pae
+from protflow.tools.residue_selectors import ChainSelector, TrueSelector
+from protflow.tools.colabfold import Colabfold, calculate_poses_interaction_pae
 from protflow.tools.protein_edits import SequenceRemover, ChainAdder
 from protflow.utils.metrics import calc_interchain_contacts_pdb
 from protflow.config import AUXILIARY_RUNNER_SCRIPTS_DIR as scripts_dir
@@ -65,6 +64,9 @@ def compile_dimer_msa_str(b_seq, t_seq, target_msa_sequences) -> str:
 """
     return msa_str
 
+def compile_msa_str(b_seq, t_seq, target_msa_sequences) -> str:
+    return NotImplemented
+
 ## This defines what is done when the script is started as a script
 def main(args):
     '''Main function that processes poses using LigandMPNN.'''
@@ -75,6 +77,7 @@ def main(args):
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
+
     # setup jobstarters
     sbatch_gpu_jobstarter = SbatchArrayJobstarter(max_cores=10, gpus=1)
     sbatch_cpu_jobstarter = SbatchArrayJobstarter(max_cores=470)
@@ -87,38 +90,57 @@ def main(args):
     rfdiffusion_runner = RFdiffusion(jobstarter=sbatch_cpu_jobstarter)
     esmfold_runner = ESMFold(jobstarter=sbatch_gpu_jobstarter)
     colabfold_runner = Colabfold(jobstarter=sbatch_cpu_jobstarter)
-    #template_bb_rmsd = BackboneRMSD(ref_col="rfdiff_1_location", chains=["D", "B"], jobstarter=sbatch_cpu_jobstarter)
     motif_bb_rmsd = MotifRMSD(ref_col="rfdiff_1_location", jobstarter=sbatch_cpu_jobstarter)
     rosetta=Rosetta(jobstarter=sbatch_cpu_jobstarter)
 
-    # Load poses from the input directory
-    poses = Poses(poses=args.input_dir, glob_suffix='*pdb', work_dir=args.output_dir)  # Corrected to use the actual argument
-    #poses.set_logger()
-
     # setup chain selectors
     chain_selector = ChainSelector()
+    true_selector = TrueSelector()
     chain_adder = ChainAdder(jobstarter=sbatch_cpu_jobstarter)
     sequence_remover = SequenceRemover(jobstarter=sbatch_cpu_jobstarter)
 
-    #diff_opts = f"diffuser.T=50 'contigmap.contigs=[{args.contigmap} {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues}]'"
-    diff_opts = f"diffuser.T=50 'contigmap.contigs=[A1-106/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues}]' potentials.guiding_potentials=[\\'type:custom_binder_potential,binderlen:80,contacts_weight:1,rog_weight:1\\']"
-    #potentials.guiding_potentials=[\\'type:binder_ROG,binderlen:80,weight:50,min_dist:0\\']
-    # Show poses dataframe
-    print(poses.df)
+    # Load poses from the input directory
+    poses = Poses(poses=args.target, work_dir=args.output_dir)
 
-    # Run the LigandMPNN process with the provided arguments
-    logging.info(f"Pre-diffusion")
+    # setup results directory
+    results_dir = f"{poses.work_dir}/results/"
+    os.makedirs(results_dir, exist_ok=True)
+
+    # define target contig.
+    true_selector.select("binder_residues", poses)
+    binder_residues = poses.df["binder_residues"].values[0].to_rfdiffusion_contig()
+    target_contig = args.target_contig or binder_residues
+
+    diff_opts = f"diffuser.T=50 'contigmap.contigs=[{target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues}]' potentials.guiding_potentials=[\\'type:custom_binder_potential,binderlen:80,contacts_weight:{args.contacts_weight},rog_weight:{args.rog_weight}\\']"
+
+    # Diffuse binders to target
+    logging.info(f"Starting diffusion of {args.num_diff} binders on {rfdiffusion_runner.jobstarter.max_cores} cores.")
+    multiplex_poses = args.multiplex_rfdiffusion or None
     poses = rfdiffusion_runner.run(
         poses=poses,
         prefix="rfdiff_1",
-        num_diffusions=int(args.num_diff),
+        num_diffusions=args.num_diff,
         options=diff_opts,
-        multiplex_poses=64
+        multiplex_poses=multiplex_poses
     )
 
     # calculate rfdiffusion binder stats
     poses.df["rfdiffusion_rog"] = [calc_rog_of_pdb(pose, chain="A") for pose in poses.poses_list()]
     poses.df["rfdiffusion_binder_contacts"] = [calc_interchain_contacts_pdb(pose, chains=["A", "B"]) for pose in poses.poses_list()]
+
+    # plot rfdiffusion results
+    plots.violinplot_multiple_cols(
+        dataframe=poses,
+        cols = ["rfdiff_1_plddt", "rfdiffusion_rog", "rfdiffusion_binder_contacts"],
+        y_labels = ["pLDDT", "ROG [\u00C5]", "# contacting Ca"],
+        titles = ["Rfdiffusion pLDDT", "ROG", "Contacts"],
+        out_path = f"{results_dir}/rfdiffusion_stats.png"
+    )
+
+    # remove unusable diffusion outputs
+    poses.filter_poses_by_value("rfdiff_1_plddt", args.rfdiff_plddt_cutoff, ">", prefix="rfdiff_plddt_filter", plot=True)
+    poses.filter_poses_by_value("rfdiffusion_rog", args.rog_cutoff, "<", prefix="rfdiffusion_rog_filter", plot=True)
+    poses.filter_poses_by_value("rfdiffusion_binder_contacts", args.contacts_cutoff, ">", prefix="rfdiffusion_binder_contacts_filter", plot=True)
 
     # combine binder stats into composite score
     poses.calculate_composite_score(f"rfdiffusion_custom_binder_score", scoreterms=["rfdiffusion_rog", "rfdiffusion_binder_contacts"], weights=[1, -1])
@@ -127,34 +149,18 @@ def main(args):
     results_dir = f"{poses.work_dir}/results/"
     os.makedirs(results_dir, exist_ok=True)
 
-    print('original dataframe:')
-    print(poses.df[['poses_description', 'rfdiff_1_plddt', 'rfdiffusion_rog', 'rfdiffusion_binder_contacts']])
-    poses.filter_poses_by_value("rfdiff_1_plddt", 0.92, ">", prefix="rfdiff_plddt_filter", plot=True)
-    poses.filter_poses_by_value("rfdiffusion_rog", 14, "<", prefix="rfdiffusion_rog_filter", plot=True)
-    poses.filter_poses_by_value("rfdiffusion_binder_contacts", 300, ">", prefix="rfdiffusion_binder_contacts_filter", plot=True)
-    print('filtered DataFrame:')
-    print(poses.df[['poses_description', 'rfdiff_1_plddt', 'rfdiffusion_rog', 'rfdiffusion_binder_contacts']])
-
-    results_dir = f"{poses.work_dir}/results/"
-    os.makedirs(results_dir, exist_ok=True)
-
-    diff_opts = f"diffuser.partial_T=20 'contigmap.contigs=[B81-186/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues.replace('A', 'B')}]'"
-    print(poses.df)
+    partial_diffusion_target_contig = f"B{int(args.binder_length)+1}-{int(args.binder_length) + 180}"
+    diff_opts = f"diffuser.partial_T=20 'contigmap.contigs=[{partial_diffusion_target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues.replace('A', 'B')}]'"
 
     logging.info("running partial diffusion")
     poses = rfdiffusion_runner.run(
         poses=poses,
         prefix="rfdiff_p",
-        num_diffusions=3,
+        num_diffusions=args.num_partial_diffusions,
         options=diff_opts,
     )
 
-    results_dir = f"{poses.work_dir}/results/"
-    os.makedirs(results_dir, exist_ok=True)
-
-    num_cycles = 3  # For example, 3 cycles
-
-    print(poses.df["poses"].to_list())
+    num_cycles = args.num_refinement_cycles  # For example, 3 cycles
     for cycle in range(1, num_cycles+1):
         print(f"Processing cycle {cycle}")
 
@@ -186,14 +192,7 @@ def main(args):
         )
 
         chain_selector.select("esm_chain_A", poses=poses, chain="A")
-
-        logging.info(f"printing")
-        print('original dataframe:')
-        print(poses.df[['poses_description', 'esm_1_plddt']])
         poses.filter_poses_by_rank(n=9, score_col='esm_1_plddt', remove_layers=1, ascending=False, prefix='top9_per_input', plot=True)
-        print('filtered dataframe:')
-        print(poses.df[['poses_description', 'esm_1_plddt']])
-
         motif_bb_rmsd.run(poses, prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}", target_motif="esm_chain_A", ref_motif="rfdiffusion_binder_res", atoms=["C", "CA", "N", "O"])
 
         results_dir = f"{poses.work_dir}/results/"
@@ -215,22 +214,8 @@ def main(args):
             show_fig = False # on the cluster, never show the figures! in Jupyter Notebooks you can feel free to show them.
         )
 
-        ## Add a chain to the poses
-        #added_chains = chain_adder.add_chain(
-        #    poses=poses,
-        #    prefix=f"add_binder_{cycle}",
-        #    ref_col="rfdiff_1_location",
-        #    copy_chain="B",
-        #    overwrite=True
-        #)
-
         logging.info(f"converting all pdbs to fasta files for af prediction")
         poses.convert_pdb_to_fasta(prefix=f"cycle_{cycle}_fasta", update_poses=True)
-
-        # Run the ColabFold process with the provided arguments
-        #if args.single_sequence_msa:
-        #    opts = "--msa-mode single_sequence"
-        #else:
         opts = "--num-models 1 --num-recycle 3"
 
         # filter poses down
@@ -310,33 +295,32 @@ def main(args):
             prefix="fastrelax_down"
         )
 
-    # Access and process the results
-    print(poses)
-
-    # Print the custom text passed via arguments
-    #print(arguments.print_text())
-
-    # Optional: You can save results to the output directory, if necessary
-    # For example:
-    # output_file = os.path.join(arguments.output_dir, "results.txt")
-    # with open(output_file, 'w') as f:
-    #     f.write(str(results))
-
 ## This is only executed when the script is started as a script
 if __name__ == "__main__":
     # Setup argument parser
     argparser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
    # Required options
-    argparser.add_argument('--input_dir', type=str, required=True, help='Path to the folder containing input pdb files')
+    argparser.add_argument('--target', type=str, required=True, help='Path to the pdb-file that should be used as target.')
     argparser.add_argument("--output_dir", type=str, required=True, help='Path to the folder containing the output')
-    argparser.add_argument("--sequences", type=str, required=True, help='Number of sequences generated')
-    argparser.add_argument("--binder_length", type=str, default=80, help='length of binder')
-    argparser.add_argument("--hotspot_residues", type=str, required=True, help='list of hotspot residues')
-    argparser.add_argument("--num_diff", type=str, required=True, help='Number of diffusion outputs')
-    argparser.add_argument("--contigmap", type=str, required=True, help='Name of chain and residues, that rfdiff uses (not the whole pdb)')
-    argparser.add_argument("--single_sequence_msa", action="store_true", help='')
-    argparser.add_argument("--fastrelax_protocol", help='')
+    argparser.add_argument("--sequences", type=str, required=True, help='Number of sequences generated by LigandMPNN')
+
+    # RFdiffusion Options
+    argparser.add_argument("--binder_length", type=str, default="80", help='Specify the length of your binder')
+    argparser.add_argument("--hotspot_residues", type=str, required=True, help='Specify the hotspot residues on your target that you want to target with your binder.')
+    argparser.add_argument("--num_diff", type=int, default=100, help='Number of diffusion outputs')
+    argparser.add_argument("--rog_cutoff", type=float, default=18, help="ROG cutoff to filter RFdiffusion outputs by. For binder lengths of 80 residues, we recommend to set this value to 14!")
+    argparser.add_argument("--contacts_cutoff", type=float, default=300, help="Cutoff for interchain contact count after Rfdiffusion. For 80 residue binders, we typically use 300. The larger your binder, the larger this value can be. Check your output_dir/results/ folder for ROG and contacts distribution of your RFdiffusion output.")
+    argparser.add_argument("--rfdiff_plddt_cutoff", type=float, default=0.92, help="pLDDT cutoff to discard RFdiffusion outputs.")
+    argparser.add_argument("--multiplex_rfdiffusion", type=int, help="Number of parallel copies of RFdiffusion that should run (this is an efficiency option). Be aware that the total number of diffusion outptus will be 'num_diff' * 'multiplex_rfdiffusion'.")
+    argparser.add_argument("--rog_weight", type=float, default=1, help="A higher value of this weight will result in more compact structures. Too high potential weights lead to undesignable backbones. Specify the weight on the ROG portion of the custom RFdiffusion binder potential.")
+    argparser.add_argument("--contacts_weight", type=float, default=1, help="A higher value of this weight will result in more contacts to the binder. Too high potential weights lead to undesignable backbones. Specify the weight on the contacts portion of the custom RFdiffusion binder potential.")
+    argparser.add_argument("--num_partial_diffusion", type=int, default=3, help="Number of partial diffusion runs to run.")
+    argparser.add_argument("--diffuse_only", action="store_true", help="Specify whether to exit the script after diffusion.")
+
+    # other
+    argparser.add_argument("--num_refinement_cycles", default=3, type=int, help="Specify the number of refinement cycles of the binder design refinement you want to run after RFdiffusion. We recommend 3, usually refinement converges after latest 5 refinement cycles.")
+    argparser.add_argument("--fastrelax_protocol", help='Specify default fastrelax_protocol to use in the Rosetta Relax steps. Defaults to ProtFlow\'s fastrelax protocol')
     argparser.add_argument("--fake_msa_path", type=str, help="path to fake target_msa to be used for AlphaFold2 predictions.")
     argparser.add_argument("--full_target_seq", type=str, help="Sequence of full target to use for prediction. DO NOT CHANGE THIS!")
 
