@@ -107,9 +107,10 @@ def main(args):
     os.makedirs(results_dir, exist_ok=True)
 
     # define target contig.
-    true_selector.select("binder_residues", poses)
-    binder_residues = poses.df["binder_residues"].values[0].to_rfdiffusion_contig()
-    target_contig = args.target_contig or binder_residues
+    true_selector.select("target_residues", poses)
+    target_residues = poses.df["target_residues"].values[0].to_rfdiffusion_contig()
+    target_length = len(target_residues)
+    target_contig = args.target_contig or target_residues
 
     diff_opts = f"diffuser.T=50 'contigmap.contigs=[{target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues}]' potentials.guiding_potentials=[\\'type:custom_binder_potential,binderlen:80,contacts_weight:{args.contacts_weight},rog_weight:{args.rog_weight}\\']"
 
@@ -146,10 +147,11 @@ def main(args):
     poses.calculate_composite_score(f"rfdiffusion_custom_binder_score", scoreterms=["rfdiffusion_rog", "rfdiffusion_binder_contacts"], weights=[1, -1])
     poses.filter_poses_by_rank(0.8, score_col="rfdiffusion_custom_binder_score", prefix='filter_poses_by_rank', plot=True)
 
-    results_dir = f"{poses.work_dir}/results/"
-    os.makedirs(results_dir, exist_ok=True)
+    # break if diffuse_only
+    if args.diffuse_only:
+        sys.exit(0)
 
-    partial_diffusion_target_contig = f"B{int(args.binder_length)+1}-{int(args.binder_length) + 180}"
+    partial_diffusion_target_contig = f"B{int(args.binder_length)+1}-{int(args.binder_length) + target_length}"
     diff_opts = f"diffuser.partial_T=20 'contigmap.contigs=[{partial_diffusion_target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues.replace('A', 'B')}]'"
 
     logging.info("running partial diffusion")
@@ -194,9 +196,6 @@ def main(args):
         chain_selector.select("esm_chain_A", poses=poses, chain="A")
         poses.filter_poses_by_rank(n=9, score_col='esm_1_plddt', remove_layers=1, ascending=False, prefix='top9_per_input', plot=True)
         motif_bb_rmsd.run(poses, prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}", target_motif="esm_chain_A", ref_motif="rfdiffusion_binder_res", atoms=["C", "CA", "N", "O"])
-
-        results_dir = f"{poses.work_dir}/results/"
-        os.makedirs(results_dir, exist_ok=True)
 
         # 1. Define the columns, titles, and y-labels before the plotting function
         cols = ["esm_1_plddt", "rfdiff_1_plddt"]  # Replace with actual column names from poses.df
@@ -263,10 +262,6 @@ def main(args):
         poses.filter_poses_by_rank(n=10 , score_col=f'af_{cycle}_iptm', ascending=False, prefix=f'best_of_ipTM_{cycle}', plot=True)
         print('filtered dataframe:')
         print(poses.df[['poses_description', f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']])
-        sys.exit(1)
-
-        results_dir = f"{poses.work_dir}/results/"
-        os.makedirs(results_dir, exist_ok=True)
 
         cols = ["f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm'"]  # Replace with actual column names from poses.df
         titles = ["f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm'"]  # Titles for the violin plots
