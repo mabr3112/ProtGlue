@@ -1,4 +1,5 @@
-#!/home/s1022006/miniconda3/envs/protflow/bin/python
+'''Full Python Script of the StickyProt Computational pipeline for design of protein binders.'''
+
 ## system
 import sys
 import random
@@ -82,7 +83,7 @@ def main(args):
 
     # setup jobstarters
     sbatch_gpu_jobstarter = SbatchArrayJobstarter(max_cores=10, gpus=1)
-    sbatch_cpu_jobstarter = SbatchArrayJobstarter(max_cores=470)
+    sbatch_cpu_jobstarter = SbatchArrayJobstarter(max_cores=640)
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
