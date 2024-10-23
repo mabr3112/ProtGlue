@@ -147,7 +147,7 @@ def main(args):
         target_length = len(target_residues)
         target_contig = target_residues
 
-    diff_opts = f"diffuser.T=50 'contigmap.contigs=[{target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues}]' potentials.guiding_potentials=[\\'type:custom_binder_potential,binderlen:80,contacts_weight:{args.contacts_weight},rog_weight:{args.rog_weight}\\']"
+    diff_opts = f"diffuser.T=50 'contigmap.contigs=[{target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues}]' potentials.guiding_potentials=[\\'type:custom_binder_potential,binderlen:{args.binder_length},contacts_weight:{args.contacts_weight},rog_weight:{args.rog_weight}\\']"
 
     # Diffuse binders to target
     logging.info(f"Starting diffusion of {args.num_diff} binders on {rfdiffusion_runner.jobstarter.max_cores} cores.")
@@ -204,7 +204,7 @@ def main(args):
     target_seqs = target.df["mpnn_sequence"].to_list()
 
     num_cycles = args.num_refinement_cycles
-    fake_msa_lengths = [50, 25, 10]
+    fake_msa_lengths = [0, 500, 50, 25]
     for cycle in range(1, num_cycles+1):
         print(f"Starting refinement cycle {cycle}")
 
