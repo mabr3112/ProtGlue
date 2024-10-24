@@ -7,6 +7,7 @@ import os
 import logging
 
 # dependencies
+import numpy as np
 import protflow
 from protflow.poses import Poses
 from protflow.jobstarters import SbatchArrayJobstarter, LocalJobStarter
@@ -19,7 +20,7 @@ import protflow.utils.plotting as plots
 from protflow.tools.residue_selectors import ChainSelector, TrueSelector
 from protflow.tools.colabfold import Colabfold, calculate_poses_interaction_pae
 from protflow.tools.protein_edits import SequenceRemover, ChainAdder
-from protflow.utils.metrics import calc_interchain_contacts_pdb
+from protflow.utils.metrics import calc_interchain_contacts_pdb, residue_contacts
 from protflow.config import AUXILIARY_RUNNER_SCRIPTS_DIR as scripts_dir
 from protflow.tools.rosetta import Rosetta
 from protflow.utils.biopython_tools import load_structure_from_pdbfile, get_sequence_from_pose
@@ -163,13 +164,14 @@ def main(args):
     # calculate rfdiffusion binder stats
     poses.df["rfdiffusion_rog"] = [calc_rog_of_pdb(pose, chain="A") for pose in poses.poses_list()]
     poses.df["rfdiffusion_binder_contacts"] = [calc_interchain_contacts_pdb(pose, chains=["A", "B"]) for pose in poses.poses_list()]
+    poses.df["rfdiffusion_hotspot_contacts"] = [np.sum([residue_contacts(pose, max_distance=8, target_chain=residue[0], partner_chain="A", target_resnum=residue[1:], min_distance = 4) for residue in args.hotspot_residues.split(",")]) for pose in poses.poses_list()]
 
     # plot rfdiffusion results
     plots.violinplot_multiple_cols(
         dataframe=poses.df,
-        cols = ["rfdiff_1_plddt", "rfdiffusion_rog", "rfdiffusion_binder_contacts"],
-        y_labels = ["pLDDT", "ROG [\u00C5]", "# contacting Ca"],
-        titles = ["Rfdiffusion pLDDT", "ROG", "Contacts"],
+        cols = ["rfdiff_1_plddt", "rfdiffusion_rog", "rfdiffusion_binder_contacts", "rfdiffusion_hotspot_contacts"],
+        y_labels = ["pLDDT", "ROG [\u00C5]", "# contacting Ca", "# hotspot contacts"],
+        titles = ["Rfdiffusion pLDDT", "ROG", "Contacts", "Hotspot Contacts"],
         out_path = f"{results_dir}/rfdiffusion_stats.png"
     )
 
@@ -177,19 +179,20 @@ def main(args):
     poses.filter_poses_by_value("rfdiff_1_plddt", args.rfdiff_plddt_cutoff, ">", prefix="rfdiff_plddt_filter", plot=True)
     poses.filter_poses_by_value("rfdiffusion_rog", args.rog_cutoff, "<", prefix="rfdiffusion_rog_filter", plot=True)
     poses.filter_poses_by_value("rfdiffusion_binder_contacts", args.contacts_cutoff, ">", prefix="rfdiffusion_binder_contacts_filter", plot=True)
+    poses.filter_poses_by_value("rfdiffusion_hotspot_contacts", args.hotspot_contacts_cutoff, ">", prefix="hotspot_cutoff", plot=True)
 
     # combine binder stats into composite score
     poses.calculate_composite_score(f"rfdiffusion_custom_binder_score", scoreterms=["rfdiffusion_rog", "rfdiffusion_binder_contacts"], weights=[1, -1])
-    poses.filter_poses_by_rank(0.8, score_col="rfdiffusion_custom_binder_score", prefix='filter_poses_by_rank', plot=True)
+    #poses.filter_poses_by_rank(0.8, score_col="rfdiffusion_custom_binder_score", prefix='filter_poses_by_rank', plot=True)
 
     # break if diffuse_only
     if args.diffuse_only:
         logging.info(f"Diffuse only was specified, now breaking Script.")
         sys.exit(0)
 
+    # setup and run partial diffusion.
     partial_diffusion_target_contig = f"B{int(args.binder_length)+1}-{int(args.binder_length) + target_length}"
     diff_opts = f"diffuser.partial_T=20 'contigmap.contigs=[{partial_diffusion_target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues.replace('A', 'B')}]'"
-
     logging.info("running partial diffusion")
     poses = rfdiffusion_runner.run(
         poses=poses,
@@ -197,6 +200,10 @@ def main(args):
         num_diffusions=args.num_partial_diffusions,
         options=diff_opts,
     )
+
+    # filter down based on number of contacts
+    poses.df["partial_diff_binder_contacts"] = [calc_interchain_contacts_pdb(pose, chains=["A", "B"]) for pose in poses.poses_list()]
+    poses.filter_poses_by_rank(n=args.max_refinement_backbones, score_col="partial_diff_binder_contacts", ascending=False, prefix="pre_refinement_contacts", plot=True)
 
     # create sequences for target
     target = Poses(poses=args.target, work_dir=f"{poses.work_dir}/target_msa")
@@ -233,8 +240,6 @@ def main(args):
         # compile designed sequences into a dictionary that maps the input backbone to the corresponding fake paired msa.
         fake_msa_poses.df["prepped_seqs"] = fake_msa_poses.df["mpnn_sequence"].str.replace(":","")
         fake_paired_msa_dict = fake_msa_poses.df.groupby("input_poses")["prepped_seqs"].apply(list).to_dict()
-
-        get_desc = lambda path: os.path.splitext(os.path.basename(path))[0]
 
         # copy second binder-chain into pose for tied sequence design
         chain_adder.superimpose_add_chain(
@@ -283,9 +288,9 @@ def main(args):
         motif_bb_rmsd.run(poses, prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}", target_motif="esm_chain_A", ref_motif="rfdiffusion_binder_res", atoms=["C", "CA", "N", "O"])
 
         # 1. Define the columns, titles, and y-labels before the plotting function
-        cols = ["esm_1_plddt", "rfdiff_1_plddt"]  # Replace with actual column names from poses.df
-        titles = ["esm_1_plddt", "rfdiff_1_plddt"]  # Titles for the violin plots
-        y_labels = ["esm_1_plddt", "rfdiff_1_plddt"]  # Y-axis l
+        cols = [f"esm_{cycle}_plddt", "rfdiff_1_plddt"]  # Replace with actual column names from poses.df
+        titles = [f"esm_{cycle}_plddt", "rfdiff_1_plddt"]  # Titles for the violin plots
+        y_labels = [f"esm_{cycle}_plddt", "rfdiff_1_plddt"]  # Y-axis l
 
         logging.info(f"plotting")
         plots.violinplot_multiple_cols(
@@ -299,15 +304,11 @@ def main(args):
         )
 
         poses.calculate_composite_score(f"cycle_{cycle}_esm_comp_score", scoreterms=[f"esm_{cycle}_plddt", f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd"], weights=[-1,1])
-        poses.filter_poses_by_value(f'esm_{cycle}_plddt', 0.7, operator=">=", prefix=f"cycle_{cycle}_esm_plddt")
-        poses.filter_poses_by_value(f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd", 4, operator="<=", prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd")
+        poses.filter_poses_by_value(f'esm_{cycle}_plddt', 0.75, operator=">=", prefix=f"cycle_{cycle}_esm_plddt")
+        poses.filter_poses_by_value(f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd", 1.5, operator="<=", prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd")
 
         logging.info(f"converting all pdbs to fasta files for af2 prediction")
         poses.convert_pdb_to_fasta(prefix=f"cycle_{cycle}_fasta", update_poses=True)
-
-        # filter poses down
-        #poses.filter_poses_by_rank(5, f"esm_{cycle}_plddt", remove_layers=2)
-        #logging.info(f"Filtered down poses to final selection of {len(poses)} sequences for AF2 dimer preds.")
 
         # prep input for fake-msa generation
         fake_a3m_file_list = []
@@ -337,14 +338,34 @@ def main(args):
             options=opts
         )
 
-        filtered_df = poses.df[(poses.df[f'af_{cycle}_binder_pae_interaction'] < 14) & (poses.df[f'af_{cycle}_iptm'] > 0.65)]
-        poses.df = filtered_df
-        poses.filter_poses_by_rank(n=10, score_col=f'af_{cycle}_binder_pae_interaction', ascending=False, prefix=f'best_of_ipAE_{cycle}', plot=True)
-        poses.filter_poses_by_rank(n=10 , score_col=f'af_{cycle}_iptm', ascending=False, prefix=f'best_of_ipTM_{cycle}', plot=True)
+        # calculate interaction pAE
+        calculate_poses_interaction_pae(
+            f"af_{cycle}_ipAE",
+            poses=poses,
+            pae_list_col=f"af_{cycle}_pae_list",
+            binder_start=0,
+            binder_end=int(args.binder_length) - 1,
+            target_start=int(args.binder_length),
+            target_end=int(args.binder_length) + target_length - 1
+        )
 
-        cols = [f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']  # Replace with actual column names from poses.df
-        titles = [f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']  # Titles for the violin plots
-        y_labels = [f'af_{cycle}_binder_pae_interaction', f'af_{cycle}_iptm']  # Y-axis l
+        # calculate binder-target RMSD to input from partial diffusion // previous cycle.
+        dimer_rmsd_reference_poses = "rfdiff_p_location" if cycle == 1 else f"fastrelax_{cycle-1}_location"
+        target_dimer_contig = f"A1-{args.binder_length},B1-{target_length}"
+        ref_dimer_contig = f"A1-{args.binder_length},B{args.binder_length+1}-{args.binder_length+target_length}" if cycle == 1 else target_dimer_contig
+        motif_bb_rmsd.run(
+            poses=poses,
+            prefix=f"cycle_{cycle}_dimer_bb",
+            ref_col=dimer_rmsd_reference_poses,
+            ref_motif=protflow.residues.from_contig(ref_dimer_contig),
+            target_motif=protflow.residues.from_contig(target_dimer_contig),
+            return_superimposed_poses=False
+        )
+
+        # plot ipAE and ipTM scores (for control)
+        cols = [f'af_{cycle}_ipAE', f'af_{cycle}_iptm']  # Replace with actual column names from poses.df
+        titles = [f'af_{cycle}_ipAE', f'af_{cycle}_iptm']  # Titles for the violin plots
+        y_labels = [f'af_{cycle}_ipAE', f'af_{cycle}_iptm']  # Y-axis l
 
         plots.violinplot_multiple_cols(
             dataframe = poses.df,
@@ -356,19 +377,62 @@ def main(args):
             show_fig = False # on the cluster, never show the figures! in Jupyter Notebooks you can feel free to show them.
         )
 
-        #relax with fastrelax protocol
+        # calculate composite score of -> ipTM, ipAE, esm_plddt, dimer_bb_rmsd
+        poses.calculate_composite_score(
+            name=f"cycle_{cycle}_af2_dimer_score",
+            scoreterms=[f"esm_{cycle}_plddt", f"af_{cycle}_iptm", f"af_{cycle}_ipAE", f"cycle_{cycle}_dimer_bb_rmsd"],
+            weights=[-1, -1, 1, 1],
+            plot=True
+        )
+
+        # break on last cycle -> FastRelax ALL AF2 outputs and select based on composite score that includes interface energy!
+        if cycle == num_cycles+1:
+            break
+
+        # filter af2-preds back to backbone level (after esm.)
+        poses.filter_poses_by_rank(1, score_col=f"cycle_{cycle}_af2_dimer_score", remove_layers=2, prefix=f"cycle_{cycle}_af2_bb", plot=True)
+
+        # fastrelax interface and calculate interface score.
         logging.info(f"starting_fastrelax")
-        fastrelax_protocol = args.fastrelax_protocol or f"{scripts_dir}/fastrelax.sap.xml"
+        fastrelax_protocol = args.fastrelax_protocol or f"{scripts_dir}/fastrelax_sap.xml"
         rosetta_options = f"-parser:protocol {fastrelax_protocol} -beta"
-        rosetta.run(poses=poses, rosetta_application="rosetta_scripts.default.linuxgccrelease", prefix="fastrelax", nstruct=15, options=rosetta_options)
+        rosetta.run(
+            poses=poses,
+            rosetta_application="rosetta_scripts.default.linuxgccrelease",
+            prefix=f"fastrelax_{cycle}",
+            nstruct=15,
+            options=rosetta_options
+        )
 
         logging.info(f"Postrelax filter.")
         poses.filter_poses_by_rank(
-            n=25,
-            score_col="fastrelax_total_score",
-            prefix="fastrelax_down"
+            n=1,
+            score_col=f"fastrelax_{cycle}_total_score",
+            remove_layers=1,
+            prefix=f"fastrelax_{cycle}_backbone",
         )
-        sys.exit(0)
+
+        # reindex poses back to partial diffusion index.
+        poses.reindex_poses(f"cycle_{cycle}_reindex", remove_lyers=3)
+
+    # after the last cycle fastrelax all structures.
+    logging.info(f"starting_fastrelax")
+    fastrelax_protocol = args.fastrelax_protocol or f"{scripts_dir}/fastrelax_sap.xml"
+    rosetta_options = f"-parser:protocol {fastrelax_protocol} -beta"
+    rosetta.run(
+        poses=poses,
+        rosetta_application="rosetta_scripts.default.linuxgccrelease",
+        prefix=f"fastrelax_{cycle}",
+        nstruct=15,
+        options=rosetta_options
+    )
+
+    logging.info(f"Postrelax filter.")
+    poses.filter_poses_by_rank(
+        n=1,
+        score_col=f"fastrelax_{cycle}_total_score",
+        prefix=f"fastrelax_{cycle}_backbone"
+    )
 
 ## This is only executed when the script is started as a script
 if __name__ == "__main__":
@@ -397,11 +461,12 @@ if __name__ == "__main__":
     argparser.add_argument("--num_partial_diffusions", type=int, default=3, help="Number of partial diffusion runs to run.")
     argparser.add_argument("--diffuse_only", action="store_true", help="Specify whether to exit the script after diffusion.")
 
-    # other
+    # fastrelax protocol
+    argparser.add_argument("--fastrelax_protocol", default="/home/mabr3112/projects/StickyProt/scripts/fastrelax_interface_analyzer.xml", help='Specify default fastrelax_protocol to use in the Rosetta Relax steps. Put the path to your StickyProt installation\'s fastrelax script here.')
+
+    # refinement_options
     argparser.add_argument("--num_refinement_cycles", default=3, type=int, help="Specify the number of refinement cycles of the binder design refinement you want to run after RFdiffusion. We recommend 3, usually refinement converges after latest 5 refinement cycles.")
-    argparser.add_argument("--fastrelax_protocol", help='Specify default fastrelax_protocol to use in the Rosetta Relax steps. Defaults to ProtFlow\'s fastrelax protocol')
-    argparser.add_argument("--fake_msa_path", type=str, help="path to fake target_msa to be used for AlphaFold2 predictions.")
-    argparser.add_argument("--full_target_seq", type=str, help="Sequence of full target to use for prediction. DO NOT CHANGE THIS!")
+    argparser.add_argument("--max_refinement_backbones", default=50, type=int, help="Maximum number of Backbones to refine during refinement cycles.")
 
     # Parse arguments
     arguments = argparser.parse_args()
