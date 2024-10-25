@@ -164,7 +164,7 @@ def main(args):
     # calculate rfdiffusion binder stats
     poses.df["rfdiffusion_rog"] = [calc_rog_of_pdb(pose, chain="A") for pose in poses.poses_list()]
     poses.df["rfdiffusion_binder_contacts"] = [calc_interchain_contacts_pdb(pose, chains=["A", "B"]) for pose in poses.poses_list()]
-    poses.df["rfdiffusion_hotspot_contacts"] = [np.sum([residue_contacts(pose, max_distance=8, target_chain=residue[0], partner_chain="A", target_resnum=residue[1:], min_distance = 4) for residue in args.hotspot_residues.split(",")]) for pose in poses.poses_list()]
+    poses.df["rfdiffusion_hotspot_contacts"] = [np.sum([residue_contacts(pose, max_distance=10, target_chain=residue[0], partner_chain="A", target_resnum=int(residue[1:])+int(args.binder_length), min_distance = 4) for residue in args.hotspot_residues.split(",")]) for pose in poses.poses_list()]
 
     # plot rfdiffusion results
     plots.violinplot_multiple_cols(
@@ -183,13 +183,14 @@ def main(args):
 
     # combine binder stats into composite score
     poses.calculate_composite_score(f"rfdiffusion_custom_binder_score", scoreterms=["rfdiffusion_rog", "rfdiffusion_binder_contacts"], weights=[1, -1])
-    #poses.filter_poses_by_rank(0.8, score_col="rfdiffusion_custom_binder_score", prefix='filter_poses_by_rank', plot=True)
 
     # break if diffuse_only
     if args.diffuse_only:
         logging.info(f"Diffuse only was specified, now breaking Script.")
         sys.exit(0)
+    
 
+    poses.save_poses("rfdiffusion_filtered_poses", overwrite=True)
     # setup and run partial diffusion.
     partial_diffusion_target_contig = f"B{int(args.binder_length)+1}-{int(args.binder_length) + target_length}"
     diff_opts = f"diffuser.partial_T=20 'contigmap.contigs=[{partial_diffusion_target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues.replace('A', 'B')}]'"
@@ -352,7 +353,7 @@ def main(args):
         # calculate binder-target RMSD to input from partial diffusion // previous cycle.
         dimer_rmsd_reference_poses = "rfdiff_p_location" if cycle == 1 else f"fastrelax_{cycle-1}_location"
         target_dimer_contig = f"A1-{args.binder_length},B1-{target_length}"
-        ref_dimer_contig = f"A1-{args.binder_length},B{args.binder_length+1}-{args.binder_length+target_length}" if cycle == 1 else target_dimer_contig
+        ref_dimer_contig = f"A1-{args.binder_length},B{int(args.binder_length)+1}-{int(args.binder_length)+target_length}" if cycle == 1 else target_dimer_contig
         motif_bb_rmsd.run(
             poses=poses,
             prefix=f"cycle_{cycle}_dimer_bb",
@@ -454,6 +455,7 @@ if __name__ == "__main__":
     argparser.add_argument("--target_contig", type=str, help="Specify the contig of the target that should be used as a binder target")
     argparser.add_argument("--rog_cutoff", type=float, default=18, help="ROG cutoff to filter RFdiffusion outputs by. For binder lengths of 80 residues, we recommend to set this value to 14!")
     argparser.add_argument("--contacts_cutoff", type=float, default=300, help="Cutoff for interchain contact count after Rfdiffusion. For 80 residue binders, we typically use 300. The larger your binder, the larger this value can be. Check your output_dir/results/ folder for ROG and contacts distribution of your RFdiffusion output.")
+    argparser.add_argument("--hotspot_contacts_cutoff", type=float, default=10, help="Minimum number of binder atoms within 4-8 Angstrom distance to hotspot residue.")
     argparser.add_argument("--rfdiff_plddt_cutoff", type=float, default=0.90, help="pLDDT cutoff to discard RFdiffusion outputs.")
     argparser.add_argument("--multiplex_rfdiffusion", type=int, help="Number of parallel copies of RFdiffusion that should run (this is an efficiency option). Be aware that the total number of diffusion outptus will be 'num_diff' * 'multiplex_rfdiffusion'.")
     argparser.add_argument("--rog_weight", type=float, default=1, help="A higher value of this weight will result in more compact structures. Too high potential weights lead to undesignable backbones. Specify the weight on the ROG portion of the custom RFdiffusion binder potential.")
