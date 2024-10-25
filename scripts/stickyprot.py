@@ -289,9 +289,9 @@ def main(args):
         motif_bb_rmsd.run(poses, prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}", target_motif="esm_chain_A", ref_motif="rfdiffusion_binder_res", atoms=["C", "CA", "N", "O"])
 
         # 1. Define the columns, titles, and y-labels before the plotting function
-        cols = [f"esm_{cycle}_plddt", "rfdiff_1_plddt"]  # Replace with actual column names from poses.df
-        titles = [f"esm_{cycle}_plddt", "rfdiff_1_plddt"]  # Titles for the violin plots
-        y_labels = [f"esm_{cycle}_plddt", "rfdiff_1_plddt"]  # Y-axis l
+        cols = [f"esm_{cycle}_plddt", f"rfdiffusion_esm_bb_{cycle}_rmsd"]
+        titles = [f"ESM pLDDT", "ESM bb-RMSD"]
+        y_labels = [f"pLDDT", "RMSD [\u00C5]"]
 
         logging.info(f"plotting")
         plots.violinplot_multiple_cols(
@@ -300,7 +300,7 @@ def main(args):
             titles = titles, # specify the titles that the individual violins should get, as a list ["title_col_a", "title_col_b", ...] # type: ignore
             y_labels = y_labels, # y_labels for all the violins, same as above, list of labels ["...", ...]
             dims = None,
-            out_path = f"{results_dir}/esmplddt_rfdiffplddt{cycle}.png", # create an output directory for your plots!
+            out_path = f"{results_dir}/cycle_{cycle}_esm_stats.png", # create an output directory for your plots!
             show_fig = False # on the cluster, never show the figures! in Jupyter Notebooks you can feel free to show them.
         )
 
@@ -365,9 +365,9 @@ def main(args):
         )
 
         # plot ipAE and ipTM scores (for control)
-        cols = [f'af_{cycle}_ipAE_pae_interaction', f'af_{cycle}_iptm']  # Replace with actual column names from poses.df
-        titles = [f'af_{cycle}_ipAE_pae_interaction', f'af_{cycle}_iptm']  # Titles for the violin plots
-        y_labels = [f'af_{cycle}_ipAE_pae_interaction', f'af_{cycle}_iptm']  # Y-axis l
+        cols = [f"cycle_{cycle}_dimer_bb_rmsd", f'af_{cycle}_ipAE_pae_interaction', f'af_{cycle}_iptm']  # Replace with actual column names from poses.df
+        titles = [f"Dimer bb-RMSD", f'AF2 ipAE', f'AF2 ipTM']  # Titles for the violin plots
+        y_labels = [f"RMSD [\u00C5]", f'ipAE', f'ipTM']  # Y-axis l
 
         plots.violinplot_multiple_cols(
             dataframe = poses.df,
