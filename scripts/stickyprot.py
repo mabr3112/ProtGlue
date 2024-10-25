@@ -118,7 +118,7 @@ def main(args):
     rfdiffusion_runner = RFdiffusion(jobstarter=optional_gpu_jobstarter)
     esmfold_runner = ESMFold(jobstarter=gpu_jobstarter)
     colabfold_runner = Colabfold(jobstarter=optional_gpu_jobstarter)
-    motif_bb_rmsd = MotifRMSD(ref_col="rfdiff_1_location", jobstarter=cpu_jobstarter)
+    motif_bb_rmsd = MotifRMSD(ref_col="rfdiff_1_location", jobstarter=cpu_jobstarter, atoms=["N", "CA", "C", "O"])
     rosetta=Rosetta(jobstarter=cpu_jobstarter)
 
     # setup chain selectors
@@ -360,13 +360,14 @@ def main(args):
             ref_col=dimer_rmsd_reference_poses,
             ref_motif=protflow.residues.from_contig(ref_dimer_contig),
             target_motif=protflow.residues.from_contig(target_dimer_contig),
+            atoms=["N", "CA", "C", "O"],
             return_superimposed_poses=False
         )
 
         # plot ipAE and ipTM scores (for control)
-        cols = [f'af_{cycle}_ipAE', f'af_{cycle}_iptm']  # Replace with actual column names from poses.df
-        titles = [f'af_{cycle}_ipAE', f'af_{cycle}_iptm']  # Titles for the violin plots
-        y_labels = [f'af_{cycle}_ipAE', f'af_{cycle}_iptm']  # Y-axis l
+        cols = [f'af_{cycle}_ipAE_pae_interaction', f'af_{cycle}_iptm']  # Replace with actual column names from poses.df
+        titles = [f'af_{cycle}_ipAE_pae_interaction', f'af_{cycle}_iptm']  # Titles for the violin plots
+        y_labels = [f'af_{cycle}_ipAE_pae_interaction', f'af_{cycle}_iptm']  # Y-axis l
 
         plots.violinplot_multiple_cols(
             dataframe = poses.df,
@@ -381,7 +382,7 @@ def main(args):
         # calculate composite score of -> ipTM, ipAE, esm_plddt, dimer_bb_rmsd
         poses.calculate_composite_score(
             name=f"cycle_{cycle}_af2_dimer_score",
-            scoreterms=[f"esm_{cycle}_plddt", f"af_{cycle}_iptm", f"af_{cycle}_ipAE", f"cycle_{cycle}_dimer_bb_rmsd"],
+            scoreterms=[f"esm_{cycle}_plddt", f"af_{cycle}_iptm", f"af_{cycle}_ipAE_pae_interaction", f"cycle_{cycle}_dimer_bb_rmsd"],
             weights=[-1, -1, 1, 1],
             plot=True
         )
