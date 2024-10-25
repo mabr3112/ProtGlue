@@ -86,6 +86,11 @@ def compile_msa_str(b_seq: str, t_seq: str, target_msa_sequences: list[str], pai
 ## This defines what is done when the script is started as a script
 def main(args):
     '''Main function that processes poses using LigandMPNN.'''
+    # prep inputs
+    fake_msa_lengths = [int(x) for x in args.fake_msa_sizes.split(",") if x]
+    if len(fake_msa_lengths) != int(args.num_refinement_cycles):
+        raise ValueError(f"Number of refinement cycles must match number of specified MSA lengths for fake MSAs! fake_msa_sizes: {fake_msa_lengths}, refinement_cycles: {args.num_refinement_cycles}")
+
     # set logging
     os.makedirs(args.output_dir, exist_ok=True)
     logging.basicConfig(
@@ -188,7 +193,6 @@ def main(args):
     if args.diffuse_only:
         logging.info(f"Diffuse only was specified, now breaking Script.")
         sys.exit(0)
-    
 
     poses.save_poses("rfdiffusion_filtered_poses", overwrite=True)
     # setup and run partial diffusion.
@@ -212,7 +216,6 @@ def main(args):
     target_seqs = target.df["mpnn_sequence"].to_list()
 
     num_cycles = args.num_refinement_cycles
-    fake_msa_lengths = [0, 500, 50, 25]
     for cycle in range(1, num_cycles+1):
         print(f"Starting refinement cycle {cycle}")
 
@@ -220,7 +223,7 @@ def main(args):
         chain_selector.select("rfdiffusion_binder_res", poses=poses, chain="A")
 
         # prep binder input for fake-msa generation
-        len_fake_msa = fake_msa_lengths[cycle]
+        len_fake_msa = fake_msa_lengths[cycle-1] # cycle starts with 1, fake_msa_lengths list index with 0
         logging.info(f"Designing {len_fake_msa} sequences each for {len(poses)} backbones using LigandMPNN.")
         fake_msa_inputs = poses.df["poses"].to_list()
         fake_msa_poses = Poses(poses = fake_msa_inputs, work_dir = poses.work_dir + "/fake_msa_paired_seqs/")
@@ -468,6 +471,7 @@ if __name__ == "__main__":
     argparser.add_argument("--fastrelax_protocol", default="/home/mabr3112/projects/StickyProt/scripts/fastrelax_interface_analyzer.xml", help='Specify default fastrelax_protocol to use in the Rosetta Relax steps. Put the path to your StickyProt installation\'s fastrelax script here.')
 
     # refinement_options
+    argparser.add_argument("--fake_msa_sizes", default="500,100,0", help="Number of sequences to use for the fake paried-sequence MSA in AF2 dimer prediction. Has to be of same length as number of refinement cycles!")
     argparser.add_argument("--num_refinement_cycles", default=3, type=int, help="Specify the number of refinement cycles of the binder design refinement you want to run after RFdiffusion. We recommend 3, usually refinement converges after latest 5 refinement cycles.")
     argparser.add_argument("--max_refinement_backbones", default=50, type=int, help="Maximum number of Backbones to refine during refinement cycles.")
 
