@@ -118,7 +118,7 @@ def main(args):
     rfdiffusion_runner = RFdiffusion(jobstarter=optional_gpu_jobstarter)
     esmfold_runner = ESMFold(jobstarter=gpu_jobstarter)
     colabfold_runner = Colabfold(jobstarter=optional_gpu_jobstarter)
-    motif_bb_rmsd = MotifRMSD(ref_col="rfdiff_1_location", jobstarter=cpu_jobstarter, atoms=["N", "CA", "C", "O"])
+    motif_bb_rmsd = MotifRMSD(jobstarter=cpu_jobstarter, atoms=["N", "CA", "C", "O"])
     rosetta=Rosetta(jobstarter=cpu_jobstarter)
 
     # setup chain selectors
@@ -286,10 +286,10 @@ def main(args):
 
         # calculate RMSD, composite score and filter for ESM success
         chain_selector.select("esm_chain_A", poses=poses, chain="A")
-        motif_bb_rmsd.run(poses, prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}", target_motif="esm_chain_A", ref_motif="rfdiffusion_binder_res", atoms=["C", "CA", "N", "O"])
+        motif_bb_rmsd.run(poses, prefix=f"rmsd_rfdiffusion_esm_bb_{cycle}", ref_col="rfdiff_p_location", target_motif="esm_chain_A", ref_motif="rfdiffusion_binder_res", atoms=["C", "CA", "N", "O"])
 
         # 1. Define the columns, titles, and y-labels before the plotting function
-        cols = [f"esm_{cycle}_plddt", f"rfdiffusion_esm_bb_{cycle}_rmsd"]
+        cols = [f"esm_{cycle}_plddt", f"rmsd_rfdiffusion_esm_bb_{cycle}_rmsd"]
         titles = [f"ESM pLDDT", "ESM bb-RMSD"]
         y_labels = [f"pLDDT", "RMSD [\u00C5]"]
 
@@ -415,7 +415,7 @@ def main(args):
         )
 
         # reindex poses back to partial diffusion index.
-        poses.reindex_poses(f"cycle_{cycle}_reindex", remove_lyers=3)
+        poses.reindex_poses(f"cycle_{cycle}_reindex", remove_layers=3)
 
     # after the last cycle fastrelax all structures.
     logging.info(f"starting_fastrelax")

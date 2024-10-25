@@ -22,7 +22,7 @@
 	</FILTERS>
 	<MOVERS>
 		<PyMOLMover name="pmm" keep_history="1" />
-		<InterfaceAnalyzerMover name="interface_analyzer" scorefxn="beta" pack_separated="true" />
+		<InterfaceAnalyzerMover name="interface_analyzer" scorefxn="beta" pack_separated="true" interface="A_B" />
 		<RunSimpleMetrics name="calc_proteinscores" metrics="sapscore,core_interaction_fa_atr,core_res_count,total_res_count" />
 		<VirtualRoot name="set_virtual_root" />
 		<AddConstraints name="add_bb_ca_cst" >
