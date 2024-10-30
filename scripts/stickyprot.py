@@ -354,6 +354,10 @@ def main(args):
             target_end=int(args.binder_length) + target_length - 1
         )
 
+        # drop _list columns
+        _list_cols = [col for col in poses.df.columns if "list" in col and "af" in col]
+        poses.df.drop(_list_cols)
+
         # calculate binder-target RMSD to input from partial diffusion // previous cycle.
         dimer_rmsd_reference_poses = "rfdiff_p_location" if cycle == 1 else f"fastrelax_{cycle-1}_location"
         target_dimer_contig = f"A1-{args.binder_length},B1-{target_length}"
