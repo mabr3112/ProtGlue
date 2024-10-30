@@ -149,9 +149,9 @@ def main(args):
         target_contig = args.target_contig
     else:
         true_selector.select("target_residues", poses)
-        target_residues = poses.df["target_residues"].values[0].to_rfdiffusion_contig()
+        target_residues = poses.df["target_residues"].values[0]
         target_length = len(target_residues)
-        target_contig = target_residues
+        target_contig = target_residues.to_rfdiffusion_contig()
 
     diff_opts = f"diffuser.T=50 'contigmap.contigs=[{target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues}]' potentials.guiding_potentials=[\\'type:custom_binder_potential,binderlen:{args.binder_length},contacts_weight:{args.contacts_weight},rog_weight:{args.rog_weight}\\']"
 
@@ -232,9 +232,10 @@ def main(args):
         poses.df[f"cycle_{cycle}_fake_msa_poses"] = fake_msa_inputs
 
         # design paired binder-target sequence pairs for fake MSA
+        fake_msa_pref = "mpnn" if cycle == 1 else f"cycle_{cycle}_mpnn"
         ligandmpnn_runner.run(
             poses = fake_msa_poses,
-            prefix = "mpnn",
+            prefix = fake_msa_pref,
             jobstarter = optional_gpu_jobstarter,
             nseq = len_fake_msa,
             model_type = "soluble_mpnn",
@@ -242,7 +243,7 @@ def main(args):
         )
 
         # compile designed sequences into a dictionary that maps the input backbone to the corresponding fake paired msa.
-        fake_msa_poses.df["prepped_seqs"] = fake_msa_poses.df["mpnn_sequence"].str.replace(":","")
+        fake_msa_poses.df["prepped_seqs"] = fake_msa_poses.df[f"{fake_msa_pref}_sequence"].str.replace(":","")
         fake_paired_msa_dict = fake_msa_poses.df.groupby("input_poses")["prepped_seqs"].apply(list).to_dict()
 
         # copy second binder-chain into pose for tied sequence design
@@ -391,7 +392,7 @@ def main(args):
         )
 
         # break on last cycle -> FastRelax ALL AF2 outputs and select based on composite score that includes interface energy!
-        if cycle == num_cycles+1:
+        if cycle == num_cycles:
             break
 
         # filter af2-preds back to backbone level (after esm.)
@@ -419,6 +420,9 @@ def main(args):
 
         # reindex poses back to partial diffusion index.
         poses.reindex_poses(f"cycle_{cycle}_reindex", remove_layers=3)
+
+    logging.info(f"Filtering poses down before last fastrelax")
+
 
     # after the last cycle fastrelax all structures.
     logging.info(f"starting_fastrelax")
