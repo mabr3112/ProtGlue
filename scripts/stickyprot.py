@@ -194,7 +194,7 @@ def main(args):
         logging.info(f"Diffuse only was specified, now breaking Script.")
         sys.exit(0)
 
-    poses.save_poses("rfdiffusion_filtered_poses", overwrite=True)
+    poses.save_poses(f"{results_dir}/rfdiffusion_filtered_poses", overwrite=True)
     # setup and run partial diffusion.
     partial_diffusion_target_contig = f"B{int(args.binder_length)+1}-{int(args.binder_length) + target_length}"
     diff_opts = f"diffuser.partial_T=20 'contigmap.contigs=[{partial_diffusion_target_contig}/0 {args.binder_length}-{args.binder_length}]' 'ppi.hotspot_res=[{args.hotspot_residues.replace('A', 'B')}]'"
@@ -261,7 +261,7 @@ def main(args):
         symmetry_res = "|".join([f'{res},{res.replace("A", "C")}' for res in binder_residues])
 
         # parse symmetry_weights argument for LigandMPNN
-        symmetry_weights = "|".join(["0.5,0.5" for _ in binder_residues])
+        symmetry_weights = "|".join(["0.8,0.2" for _ in binder_residues])
 
         # Design binder sequences
         logging.info(f"Designing {args.num_mpnn_sequences} sequences each for {len(poses)} backbones using LigandMPNN.")
@@ -387,7 +387,7 @@ def main(args):
         poses.calculate_composite_score(
             name=f"cycle_{cycle}_af2_dimer_score",
             scoreterms=[f"esm_{cycle}_plddt", f"af_{cycle}_iptm", f"af_{cycle}_ipAE_pae_interaction", f"cycle_{cycle}_dimer_bb_rmsd"],
-            weights=[-1, -1, 1, 1],
+            weights=[-0.5, -1, 1, 0.5],
             plot=True
         )
 
@@ -396,7 +396,7 @@ def main(args):
             break
 
         # filter af2-preds back to backbone level (after esm.)
-        poses.filter_poses_by_rank(1, score_col=f"cycle_{cycle}_af2_dimer_score", remove_layers=2, prefix=f"cycle_{cycle}_af2_bb", plot=True)
+        poses.filter_poses_by_rank(3, score_col=f"cycle_{cycle}_af2_dimer_score", remove_layers=2, prefix=f"cycle_{cycle}_af2_bb", plot=True)
 
         # fastrelax interface and calculate interface score.
         logging.info(f"starting_fastrelax")
@@ -406,14 +406,17 @@ def main(args):
             poses=poses,
             rosetta_application="rosetta_scripts.default.linuxgccrelease",
             prefix=f"fastrelax_{cycle}",
-            nstruct=15,
+            nstruct=5,
             options=rosetta_options
         )
+
+        # calculate contacts composite score
+        poses.calculate_composite_score(f"{cycle}_rosetta_score", scoreterms=[f"fastrelax_{cycle}_nres_int", f"fastrelax_{cycle}_hbonds_int", f"fastrelax_{cycle}_dG_separated"], weights=[-1, -1, 2])
 
         logging.info(f"Postrelax filter.")
         poses.filter_poses_by_rank(
             n=1,
-            score_col=f"fastrelax_{cycle}_total_score",
+            score_col=f"{cycle}_rosetta_score",
             remove_layers=1,
             prefix=f"fastrelax_{cycle}_backbone",
         )
@@ -422,7 +425,7 @@ def main(args):
         poses.reindex_poses(f"cycle_{cycle}_reindex", remove_layers=3)
 
     logging.info(f"Filtering poses down before last fastrelax")
-
+    poses.filter_poses_by_rank(3, score_col=f"cycle_{cycle}_af2_dimer_score", remove_layers=2, prefix=f"cycle_{cycle}_af2_bb", plot=True)
 
     # after the last cycle fastrelax all structures.
     logging.info(f"starting_fastrelax")
@@ -436,12 +439,17 @@ def main(args):
         options=rosetta_options
     )
 
+    # calculate contacts composite score
+    poses.calculate_composite_score(f"{cycle}_rosetta_score", scoreterms=[f"fastrelax_{cycle}_nres_int", f"fastrelax_{cycle}_hbonds_int", f"fastrelax_{cycle}_dG_separated"], weights=[-1, -1, 2])
+
     logging.info(f"Postrelax filter.")
     poses.filter_poses_by_rank(
         n=1,
-        score_col=f"fastrelax_{cycle}_total_score",
+        score_col=f"{cycle}_rosetta_score",
         prefix=f"fastrelax_{cycle}_backbone"
     )
+
+    poses.save_poses(f"{results_dir}/final_refined_poses", overwrite=True)
 
 ## This is only executed when the script is started as a script
 if __name__ == "__main__":
